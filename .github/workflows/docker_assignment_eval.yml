@@ -1,0 +1,126 @@
+name: Docker Assignment Evaluation
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths: [ 'Docker_Assignment/docker/Dockerfile' ]
+
+jobs:
+  docker-test:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.9.23-slim
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+
+    steps:
+      # Step 1: Checkout the files here.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Test build the docker image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3 # Use the latest stable version
+
+      - name: Build Docker image
+        id: build-docker-image
+        uses: docker/build-push-action@v5
+        with:
+          push: false
+          context: Docker_Assignment/docker
+          file: Docker_Assignment/docker/Dockerfile
+        # We allow it to continue on error so we can capture the output and provide feedback
+        continue-on-error: true
+
+      # This step captures the raw output of the previous step for detailed error reporting
+      - name: Capture Docker Build Output
+        id: capture-build-output
+        run: |
+          # The logs for the previous step can be found in the workflow run.
+          # We'll use a trick to get the full logs for the 'Build Docker image' step.
+          # This is a simplification; in a real scenario, parsing specific errors
+          # might require more advanced log parsing or custom Docker build scripts.
+          # For now, we'll indicate if it failed and suggest checking logs.
+          # A more robust solution might involve parsing the actual logs from `docker build` command
+          # if you were to run it directly instead of through the action.
+          if [ "${{ steps.build-docker-image.outcome }}" == "failure" ]; then
+            echo "docker_build_failed=true" >> $GITHUB_OUTPUT
+            echo "error_message=The Docker build failed. Please check the 'Build Docker image' step logs for detailed error messages." >> $GITHUB_OUTPUT
+          else
+            echo "docker_build_failed=false" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      # Step 3: If the docker image builds successfully then grab a code
+      - name: Install uv
+        if: steps.build-docker-image.outcome == 'success'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        if: steps.build-docker-image.outcome == 'success'
+        run: |
+          uv pip install --system requests uuid
+
+      - name: Generate secret code
+        id: generate-code
+        if: steps.build-docker-image.outcome == 'success'
+        run: |
+          SECRET_CODE=$(python .github/workflows/scripts/generate_secret_code.py)
+          echo "Generated Secret Code: $SECRET_CODE"
+          echo "secret_code=$SECRET_CODE" >> $GITHUB_OUTPUT
+        shell: bash
+
+      # --- Comment on Pull Request (SUCCESS case) ---
+      - name: Comment secret code on PR
+        if: steps.build-docker-image.outcome == 'success'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            🎉 **Dockerfile Build Successful!** 🎉
+
+            Great job! Your Dockerfile built successfully.
+
+            Please copy the following secret code and provide it to your Coursera course to prove completion:
+
+            ```
+            ${{ steps.generate-code.outputs.secret_code }}
+            ```
+
+            Keep up the excellent work!
+          comment-id: docker-build-secret-code
+          update-existing: true
+
+      # --- Comment on Pull Request (FAILURE case for Docker Build) ---
+      - name: Comment on PR (Docker Build Failure)
+        if: steps.build-docker-image.outcome == 'failure'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ❌ **Dockerfile Build Failed!** ❌
+
+            It looks like your Dockerfile failed to build.
+
+            **Here's what we know:**
+            - **Problem:** ${{ steps.capture-build-output.outputs.error_message }}
+
+            **To troubleshoot, please:**
+            1.  **Review the Action logs:** Click on the "Details" link next to the failed 'Build Docker image' step in your workflow run. The logs will provide specific error messages (e.g., syntax errors, missing files, incorrect instructions).
+            2.  **Inspect your `Dockerfile`:** Double-check for typos, incorrect paths, or invalid Docker instructions.
+            3.  **Common issues:**
+                * `FROM` image not found.
+                * Incorrect `COPY` or `ADD` paths.
+                * Syntax errors in Dockerfile commands.
+                * Problems with dependencies or commands run during the build (e.g., `RUN pip install`).
+
+            Once you've resolved the issue, push your changes to this pull request, and the workflow will automatically re-run.
+
+            You've got this! Keep learning and trying!
+          comment-id: docker-build-failure
+          update-existing: true

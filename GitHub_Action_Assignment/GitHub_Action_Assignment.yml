@@ -1,0 +1,13 @@
+# PUT YOUR GITHUB ACTION WORKFLOW HERE
+
+name: GitHub Action
+
+on:
+  # PUT A TRIGGER HERE
+
+jobs:
+  job-name: # CALL THE JOB SOMETHING
+    runs-on: ubuntu-latest  
+    
+    steps:
+        # PUT A STEP HERE 'uses' or 'run'

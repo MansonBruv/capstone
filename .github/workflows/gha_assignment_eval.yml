@@ -1,0 +1,200 @@
+name: GHA Assignment Evaluation
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - '.github/workflows/GitHub_Action_Assignment.yml'
+
+jobs:
+  check-workflow:
+    runs-on: ubuntu-latest
+    container:
+      image: maniator/gh
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      workflow_status: ${{ steps.check-results.outputs.workflow_status }}
+      recent_success: ${{ steps.check-results.outputs.recent_success }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: |
+          apk add --no-cache jq
+
+      - name: Check for recent successful runs
+        id: check-results
+        run: |
+          WORKFLOW_STATUS="none"
+          RECENT_SUCCESS=false
+
+          # Look for workflow files that might match
+          WORKFLOW_FILE=".github/workflows/GitHub_Action_Assignment.yml"
+
+          echo "Checking for workflow at: $WORKFLOW_FILE"
+
+          # Try to find the workflow using GitHub API
+          WORKFLOW_INFO=$(gh api repos/${{ github.repository }}/actions/workflows 2>/dev/null | jq -r --arg path "$WORKFLOW_FILE" '.workflows[] | select(.path == $path) | .id' | head -1)
+
+          if [ ! -z "$WORKFLOW_INFO" ] && [ "$WORKFLOW_INFO" != "null" ] && [ "$WORKFLOW_INFO" != "" ]; then
+            echo "Found workflow with ID: $WORKFLOW_INFO"
+
+            # Check for recent runs (last 7 days to be more forgiving)
+            echo "Checking for recent workflow runs..."
+            RECENT_RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/$WORKFLOW_INFO/runs?per_page=10" 2>/dev/null | jq -r '.workflow_runs[] | select(.created_at > "'$(date -d '7 days ago' -Iso8601 2>/dev/null || date -d '7 days ago' -u +%Y-%m-%dT%H:%M:%SZ)'") | {id: .id, status: .status, conclusion: .conclusion, created_at: .created_at, head_branch: .head_branch}')
+
+            if [ ! -z "$RECENT_RUNS" ] && [ "$RECENT_RUNS" != "" ]; then
+              echo "Found recent workflow runs:"
+              echo "$RECENT_RUNS" | jq -c '.'
+
+              # Check if any recent run was successful
+              SUCCESS_COUNT=$(echo "$RECENT_RUNS" | jq -r 'select(.conclusion == "success") | .id' | wc -l)
+
+              if [ "$SUCCESS_COUNT" -gt 0 ]; then
+                WORKFLOW_STATUS="success"
+                RECENT_SUCCESS=true
+                echo "✅ Found $SUCCESS_COUNT successful workflow run(s)"
+
+                # Get the most recent successful run details
+                LATEST_SUCCESS=$(echo "$RECENT_RUNS" | jq -r 'select(.conclusion == "success") | .created_at' | head -1)
+                echo "Most recent success: $LATEST_SUCCESS"
+              else
+                # Check the status of the most recent run
+                LATEST_STATUS=$(echo "$RECENT_RUNS" | jq -r '.conclusion // .status' | head -1)
+                WORKFLOW_STATUS="$LATEST_STATUS"
+                echo "Most recent run status: $WORKFLOW_STATUS"
+              fi
+            else
+              echo "No recent workflow runs found (checked last 7 days)"
+              WORKFLOW_STATUS="no_recent_runs"
+            fi
+          else
+            echo "Could not find workflow in repository or workflow not yet registered"
+            echo "This might happen if:"
+            echo "1. The workflow file was just added and GitHub hasn't indexed it yet"
+            echo "2. The workflow has never been triggered"
+            echo "3. There's an issue with the workflow file"
+            WORKFLOW_STATUS="not_indexed"
+          fi
+
+          echo "Final workflow_status: $WORKFLOW_STATUS"
+          echo "workflow_status=$WORKFLOW_STATUS" >> $GITHUB_OUTPUT
+          echo "recent_success=$RECENT_SUCCESS" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: sh
+
+  generate-code-and-comment:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11-slim
+    needs: check-workflow
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install git (required for actions)
+        run: |
+          apt-get update && apt-get install -y git
+
+      - name: Install Python dependencies
+        if: needs.check-workflow.outputs.workflow_status == 'success'
+        run: |
+          pip install requests uuid
+
+      - name: Generate secret code
+        id: generate-code
+        if: needs.check-workflow.outputs.workflow_status == 'success'
+        run: |
+          SECRET_CODE=$(python .github/workflows/scripts/generate_secret_code.py)
+          echo "Generated Secret Code: $SECRET_CODE"
+          echo "secret_code=$SECRET_CODE" >> $GITHUB_OUTPUT
+
+      # --- Comment on Pull Request (SUCCESS case) ---
+      - name: Comment secret code on PR
+        if: needs.check-workflow.outputs.workflow_status == 'success'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            🎉 **GitHub Action Successful!** 🎉
+
+            Great job! Your GitHub Action ran successfully.
+
+            Please copy the following secret code and provide it to your Coursera course to prove completion:
+
+            ```
+            ${{ steps.generate-code.outputs.secret_code }}
+            ```
+
+            Keep up the excellent work!
+          comment-id: docker-build-secret-code
+          update-existing: true
+
+      # --- Comment on Pull Request (NO RUNS case) ---
+      - name: Comment on no workflow runs
+        if: needs.check-workflow.outputs.workflow_status == 'no_recent_runs' || needs.check-workflow.outputs.workflow_status == 'not_indexed'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ⚠️ **No Recent Workflow Runs Found** ⚠️
+
+            Your workflow file exists at `.github/workflows/GitHub_Action_Assignment.yml`, but I haven't found any successful runs in the last 7 days.
+
+            **This could mean:**
+            1. Your workflow hasn't been triggered yet
+            2. Your workflow doesn't have the right triggers to run automatically
+            3. Your workflow has errors that prevent it from running
+
+            **To get your workflow running:**
+            1. Make sure your workflow has triggers like:
+               ```yaml
+               on:
+                 push:
+                   branches: [ main ]
+                 pull_request:
+                   branches: [ main ]
+               ```
+            2. Try making a small change to your repository (like editing this comment or adding a space to a file) to trigger the workflow
+            3. Check the "Actions" tab in your repository to see if there are any workflow runs
+
+            Once your workflow runs successfully, I'll automatically detect it and give you the completion code! 🚀
+          comment-id: no-workflow-runs
+          update-existing: true
+
+      # --- Comment on Pull Request (FAILURE case) ---
+      - name: Comment on PR (Failure)
+        if: needs.check-workflow.outputs.workflow_status == 'failure'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ⚠️ **Workflow Run Failed** ⚠️
+
+            Your workflow file exists and is valid, but the most recent run failed with status: `${{ needs.check-workflow.outputs.workflow_status }}`
+
+            **Next steps:**
+            1. Check the Actions tab in your repository to see the detailed logs
+            2. Look for error messages in the failed workflow run
+            3. Fix any issues in your workflow or the code it's trying to run
+            4. Push your changes to trigger another run
+
+            Once your workflow runs successfully, the evaluation will automatically update!
+
+            Keep trying! You'll get it! 💪
+          comment-id: learner-action-secret-code-failure
+          update-existing: true
+  
