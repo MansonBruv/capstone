@@ -3,6 +3,8 @@
 name: GitHub Action
 
 on:
+  pull_request:
+    branches: [main, github_action]
   # PUT A TRIGGER HERE
 
 jobs:
