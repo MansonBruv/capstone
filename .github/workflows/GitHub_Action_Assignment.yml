@@ -8,8 +8,13 @@ on:
   # PUT A TRIGGER HERE
 
 jobs:
-  job-name: # CALL THE JOB SOMETHING
-    runs-on: ubuntu-latest  
-    
+  github-action:
+    runs-on: windows 
+    container:
+      image: maniator/gh
     steps:
         # PUT A STEP HERE 'uses' or 'run'
+        - name: Checkout files
+          uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
