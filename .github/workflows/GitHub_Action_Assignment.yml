@@ -1,0 +1,22 @@
+# PUT YOUR GITHUB ACTION WORKFLOW HERE
+
+name: GitHub Action
+
+on:
+  pull_request:
+    branches: [main, github_action]
+  # PUT A TRIGGER HERE
+
+jobs:
+  github-action:
+    runs-on: ubuntu-latest
+    container:
+      image: maniator/gh
+    steps:
+        # PUT A STEP HERE 'uses' or 'run'
+        - name: Checkout files
+          uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+        - name: Show secret code
+          run: echo "The secret code is ${{ secrets.SECRET_CODE }}"
